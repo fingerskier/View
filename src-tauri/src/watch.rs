@@ -1,4 +1,4 @@
-use notify::event::{AccessKind, AccessMode, ModifyKind};
+use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 use std::collections::{BTreeSet, HashSet};
@@ -7,14 +7,13 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// Whether an event can change what a file or directory listing shows.
-/// inotify also reports opens, read-only closes and attribute changes; the
-/// viewer reading a file causes those (relatime updates atime on the first
-/// read after a write), so counting them would make every render trigger
-/// another one.
+/// inotify also reports opens and read-only closes, and the viewer reading a
+/// file or listing a directory causes those; counting them would make every
+/// render trigger another one. (atime bumps from reads raise no event.)
 fn is_change(kind: &EventKind) -> bool {
     match kind {
         EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
-        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_)) => false,
+        EventKind::Access(_) => false,
         _ => true,
     }
 }
@@ -108,25 +107,27 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{CreateKind, DataChange, MetadataKind, RemoveKind, RenameMode};
+    use notify::event::{CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind, RenameMode};
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
 
     #[test]
     fn reads_are_not_changes() {
         assert!(!is_change(&EventKind::Access(AccessKind::Open(AccessMode::Any))));
         assert!(!is_change(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
-        assert!(!is_change(&EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))));
         assert!(is_change(&EventKind::Access(AccessKind::Close(AccessMode::Write))));
         assert!(is_change(&EventKind::Modify(ModifyKind::Data(DataChange::Any))));
+        assert!(is_change(&EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))));
         assert!(is_change(&EventKind::Modify(ModifyKind::Name(RenameMode::To))));
         assert!(is_change(&EventKind::Create(CreateKind::File)));
         assert!(is_change(&EventKind::Remove(RemoveKind::File)));
     }
 
     /// Reading a watched file or listing a watched directory must not report
-    /// anything, or the viewer re-renders forever; writing must.
+    /// anything, or the viewer re-renders forever; writes, chmod and touch must.
     #[test]
-    fn reading_is_silent_writing_is_not() {
+    fn reading_is_silent_changes_are_not() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.txt");
         std::fs::write(&file, "one").unwrap();
@@ -137,16 +138,32 @@ mod tests {
         let sink = seen.clone();
         let mut w = Watcher::new(move |paths| sink.lock().unwrap().extend(paths)).unwrap();
         w.set_dirs(HashSet::from([dir.path().to_path_buf()]));
+        let settle = || {
+            std::thread::sleep(Duration::from_millis(400));
+            std::mem::take(&mut *seen.lock().unwrap())
+        };
+        let read = || {
+            for _ in 0..5 {
+                std::fs::read(&file).unwrap();
+                std::fs::read_dir(dir.path()).unwrap().for_each(drop);
+            }
+        };
 
-        for _ in 0..5 {
-            std::fs::read(&file).unwrap();
-            std::fs::read_dir(dir.path()).unwrap().for_each(drop);
-        }
-        std::thread::sleep(Duration::from_millis(500));
-        assert!(seen.lock().unwrap().is_empty(), "reads reported: {:?}", seen.lock().unwrap());
+        read();
+        assert_eq!(settle(), Vec::<PathBuf>::new(), "reads reported");
 
         std::fs::write(&file, "two").unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-        assert!(seen.lock().unwrap().contains(&file));
+        assert!(settle().contains(&file), "write missed");
+        read();
+        assert_eq!(settle(), Vec::<PathBuf>::new(), "reads after a write reported");
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(settle().contains(&file), "chmod missed");
+        read();
+        assert_eq!(settle(), Vec::<PathBuf>::new(), "reads after a chmod reported");
+
+        // Read-only handle: its close must not be what gets reported.
+        std::fs::File::open(&file).unwrap().set_modified(SystemTime::now()).unwrap();
+        assert!(settle().contains(&file), "touch missed");
     }
 }

@@ -171,7 +171,11 @@ export class Viewer {
     const cur = this.current;
     if (!cur) return;
     const dir = dirname(cur.path);
-    const hit = paths.includes(cur.path) || (COMPOUND.includes(cur.type.kind) && paths.some((p) => dirname(p) === dir));
+    const hit =
+      paths.includes(cur.path) ||
+      // A renamed or replaced ancestor directory is reported as itself.
+      paths.some((p) => cur.path.startsWith(`${p}/`)) ||
+      (COMPOUND.includes(cur.type.kind) && paths.some((p) => dirname(p) === dir));
     if (hit) void this.reload();
   }
 
