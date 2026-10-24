@@ -12,6 +12,7 @@ const docx: Renderer = async (host, ctx) => {
   let invert = prefs.get("docx:invert", false);
   let view: View | null = null;
   let pane: HTMLElement | null = null;
+  let seq = 0;
 
   const quick: Renderer = async (paneHost) => {
     const styles = el("div");
@@ -40,13 +41,18 @@ const docx: Renderer = async (host, ctx) => {
   };
 
   async function mount() {
+    const mine = ++seq;
     view?.dispose();
+    view = null;
     pane?.remove();
     childTools.replaceChildren();
-    pane = el("div", { class: "pane" });
-    pane.classList.toggle("invert-pages", invert);
-    host.append(pane);
-    view = await (print ? officeAsPdf : quick)(pane, { ...ctx, tools: childTools });
+    const myPane = el("div", { class: "pane" });
+    pane = myPane;
+    myPane.classList.toggle("invert-pages", invert);
+    host.append(myPane);
+    const next = await (print ? officeAsPdf : quick)(myPane, { ...ctx, tools: childTools });
+    if (mine !== seq) next.dispose();
+    else view = next;
   }
 
   toggleButton(ctx.tools, "Invert", invert, (on) => {
@@ -66,6 +72,7 @@ const docx: Renderer = async (host, ctx) => {
   return {
     update: () => view?.update() ?? Promise.resolve(),
     dispose: () => {
+      seq++;
       view?.dispose();
       pane?.remove();
     },

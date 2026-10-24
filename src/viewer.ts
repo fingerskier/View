@@ -47,6 +47,8 @@ interface Current {
   type: FileType;
   version: number;
   view: View | null;
+  /** Changed on disk while the first render was still running. */
+  dirty: boolean;
 }
 
 export interface ViewerEls {
@@ -115,7 +117,7 @@ export class Viewer {
     this.setCrumbs(path);
     this.els.kind.textContent = kindLabel[type.kind];
 
-    const current: Current = { path, type, version: Date.now(), view: null };
+    const current: Current = { path, type, version: Date.now(), view: null, dirty: false };
     this.current = current;
     const ctx: Ctx = {
       path,
@@ -143,6 +145,10 @@ export class Viewer {
         return;
       }
       current.view = view;
+      if (current.dirty) {
+        current.dirty = false;
+        void this.reload();
+      }
     } catch (e) {
       if (token === this.token) host.replaceChildren(messageBox("error", "Could not render this file", e instanceof Error ? e.message : String(e)));
     } finally {
@@ -164,16 +170,23 @@ export class Viewer {
   /** Re-render the open file in place (live update or `r`). */
   async reload() {
     const cur = this.current;
-    if (!cur?.view) return;
+    if (!cur) return;
+    if (!cur.view) {
+      // Still mounting: re-render once the first render lands.
+      cur.dirty = true;
+      return;
+    }
     if (this.updating) {
       this.again = true;
       return;
     }
     this.updating = true;
     try {
-      try {
-        await api.stat(cur.path);
-      } catch {
+      let gone = false;
+      await api.stat(cur.path).catch(() => (gone = true));
+      // Every await is a chance for the user to have opened another file.
+      if (cur !== this.current) return;
+      if (gone) {
         this.els.view.classList.add("stale");
         this.els.live.textContent = "deleted";
         return;
@@ -188,7 +201,7 @@ export class Viewer {
       this.flash();
       await this.refreshStatus();
     } catch (e) {
-      this.els.live.textContent = `update failed: ${e instanceof Error ? e.message : e}`;
+      if (cur === this.current) this.els.live.textContent = `update failed: ${e instanceof Error ? e.message : e}`;
     } finally {
       this.updating = false;
       if (this.again) {

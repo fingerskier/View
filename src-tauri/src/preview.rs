@@ -64,15 +64,15 @@ pub fn handle(root: &Path, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
 
     let Ok(path) = fsops::confine(root, &decoded) else { return status(StatusCode::FORBIDDEN) };
     let Ok(bytes) = std::fs::read(&path) else { return status(StatusCode::NOT_FOUND) };
-    let mime = mime_for(&path);
-    let mut response = Response::builder()
-        .header(header::CONTENT_TYPE, mime)
+    // Every response carries the policy, not just documents: a worker takes
+    // its CSP from its own script response, not from the page that started it.
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime_for(&path))
         .header(header::CACHE_CONTROL, "no-store")
-        .header("X-Content-Type-Options", "nosniff");
-    if mime.starts_with("text/html") || mime.starts_with("application/xhtml") || mime.starts_with("image/svg") {
-        response = response.header("Content-Security-Policy", csp(scripts));
-    }
-    response.body(bytes).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR))
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Security-Policy", csp(scripts))
+        .body(bytes)
+        .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
 #[cfg(test)]
@@ -97,6 +97,12 @@ mod tests {
 
         let res = get(&root, &format!("preview://localhost/%2F{encoded}/a%20b.html?scripts=1"));
         assert!(res.headers()["Content-Security-Policy"].to_str().unwrap().contains("'unsafe-inline'"));
+
+        // Scripts (potential workers) get a network-blocking policy too.
+        std::fs::write(root.join("w.js"), "postMessage(1)").unwrap();
+        let res = get(&root, &format!("preview://localhost/%2F{encoded}/w.js"));
+        let csp = res.headers()["Content-Security-Policy"].to_str().unwrap();
+        assert!(csp.contains("connect-src 'self' preview: data: blob:") && !csp.contains("https:"));
     }
 
     #[test]

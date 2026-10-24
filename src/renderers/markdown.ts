@@ -61,7 +61,7 @@ async function renderMermaid(blocks: HTMLElement[]) {
 async function build(article: HTMLElement, ctx: Ctx) {
   const file = await ctx.text();
   const { front, body } = splitFrontMatter(file.text);
-  const html = DOMPurify.sanitize(md.render(body), { ADD_ATTR: ["start"] });
+  const html = DOMPurify.sanitize(md.render(body), { ADD_ATTR: ["start"], FORBID_TAGS: ["form", "style"] });
   const next = el("div");
   next.innerHTML = html;
 

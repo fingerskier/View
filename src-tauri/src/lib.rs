@@ -119,6 +119,18 @@ fn start_watcher(app: &AppHandle) -> notify::Result<watch::Watcher> {
     let handle = app.clone();
     let theme_base = theme::base_dir();
     let mut watcher = watch::Watcher::new(move |paths| {
+        // inotify watches inodes: a watched directory that was replaced at the
+        // same path (rm + mkdir, mv over) needs a fresh watch.
+        if let Some(w) = handle.state::<AppState>().watcher.lock().ok().as_mut().and_then(|g| g.as_mut()) {
+            w.rearm(&paths);
+            // omarchy-theme-set swaps theme/ via rm + mv; re-adding also covers
+            // the moment it did not exist.
+            if let Some(base) = &theme_base {
+                if paths.iter().any(|p| p.starts_with(base)) {
+                    w.watch_extra(&base.join("theme"));
+                }
+            }
+        }
         let in_theme = |p: &PathBuf| theme_base.as_ref().is_some_and(|b| p.starts_with(b));
         let (theme_paths, fs_paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(in_theme);
         if !fs_paths.is_empty() {
@@ -126,12 +138,6 @@ fn start_watcher(app: &AppHandle) -> notify::Result<watch::Watcher> {
             let _ = handle.emit("fs-changed", list);
         }
         if !theme_paths.is_empty() {
-            // omarchy-theme-set replaces theme/ wholesale, so re-arm its watch.
-            if let Some(base) = &theme_base {
-                if let Some(w) = handle.state::<AppState>().watcher.lock().ok().as_mut().and_then(|g| g.as_mut()) {
-                    w.watch_extra(&base.join("theme"));
-                }
-            }
             let _ = handle.emit("theme-changed", theme::load());
         }
     })?;
@@ -175,9 +181,13 @@ fn run(launch: cli::Launch) {
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 // Links are opened externally by the UI; never navigate the app (or
                 // a previewed HTML frame) to anything but app and file content.
-                .on_navigation(|url| {
-                    matches!(url.scheme(), "tauri" | "asset" | "preview")
-                        || matches!(url.host_str(), Some("localhost" | "tauri.localhost"))
+                .on_navigation(|url| match url.scheme() {
+                    "tauri" | "asset" | "preview" => true,
+                    "http" => {
+                        url.host_str() == Some("tauri.localhost")
+                            || (cfg!(debug_assertions) && url.host_str() == Some("localhost") && url.port() == Some(1420))
+                    }
+                    _ => false,
                 })
                 .title(&title)
                 .inner_size(1280.0, 860.0)

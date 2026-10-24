@@ -64,6 +64,22 @@ impl Watcher {
         }
     }
 
+    /// Re-register watched directories among `touched` paths. A directory that
+    /// is gone is forgotten, so the UI's next `set_dirs` adds it back if it returns.
+    pub fn rearm<'a>(&mut self, touched: impl IntoIterator<Item = &'a PathBuf>) {
+        for path in touched {
+            let (ui, extra) = (self.dirs.contains(path), self.extra.contains(path));
+            if !ui && !extra {
+                continue;
+            }
+            let _ = self.debouncer.unwatch(path);
+            if self.debouncer.watch(path, RecursiveMode::NonRecursive).is_err() {
+                self.dirs.remove(path);
+                self.extra.remove(path);
+            }
+        }
+    }
+
     fn watch_one(&mut self, dir: &Path) -> bool {
         if self.dirs.contains(dir) || self.extra.contains(dir) {
             return true;

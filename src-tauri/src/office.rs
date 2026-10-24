@@ -103,7 +103,11 @@ pub fn to_pdf(src: &Path, cache_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn convert(soffice: &Path, src: &Path, out: &Path, profile: &Path) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
     let profile_url = format!("file://{}", profile.display());
+    // stderr goes to a file: an undrained pipe can fill and stall LibreOffice.
+    let log_path = out.join("soffice.log");
+    let log = File::create(&log_path).map_err(|e| e.to_string())?;
     let mut child = Command::new(soffice)
         .arg(format!("-env:UserInstallation={profile_url}"))
         .args(["--headless", "--invisible", "--norestore", "--nologo", "--nodefault", "--nolockcheck"])
@@ -112,23 +116,23 @@ fn convert(soffice: &Path, src: &Path, out: &Path, profile: &Path) -> Result<(),
         .arg(src)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(log)
+        // soffice → oosplash → soffice.bin: a group lets a timeout kill all of them.
+        .process_group(0)
         .spawn()
         .map_err(|e| format!("could not start LibreOffice: {e}"))?;
+    let group = child.id() as libc::pid_t;
     let started = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
-                let mut err = String::new();
-                if let Some(mut stderr) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = stderr.read_to_string(&mut err);
-                }
-                return Err(format!("LibreOffice failed ({status}): {}", err.trim()));
+                let err = fs::read_to_string(&log_path).unwrap_or_default();
+                let tail: String = err.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                return Err(format!("LibreOffice failed ({status}): {}", tail.trim()));
             }
             Ok(None) if started.elapsed() > TIMEOUT => {
-                let _ = child.kill();
+                unsafe { libc::kill(-group, libc::SIGKILL) };
                 let _ = child.wait();
                 return Err("LibreOffice timed out".into());
             }

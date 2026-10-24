@@ -23,10 +23,11 @@
         "frame-src": "preview: http://preview.localhost",
         "worker-src": "'self' blob:",
         "object-src": "'none'",
+        "form-action": "'none'",
         "base-uri": "'self'"
       },
       "devCsp": null,
-      "assetProtocol": { "enable": true, "scope": [] }
+      "assetProtocol": { "enable": true, "scope": { "allow": [], "requireLiteralLeadingDot": false } }
     }
   },
   "bundle": {

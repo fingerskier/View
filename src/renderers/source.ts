@@ -11,15 +11,22 @@ export function withSource(rendered: Renderer): Renderer {
     ctx.tools.append(childTools);
     let view: View | null = null;
     let pane: HTMLElement | null = null;
+    let seq = 0;
 
     async function mount() {
+      const mine = ++seq;
       view?.dispose();
+      view = null;
       pane?.remove();
       childTools.replaceChildren();
-      pane = el("div", { class: "pane" });
-      host.append(pane);
+      const myPane = el("div", { class: "pane" });
+      pane = myPane;
+      host.append(myPane);
       const child = { ...ctx, tools: childTools };
-      view = source ? await code(pane, child) : await rendered(pane, child);
+      const next = source ? await code(myPane, child) : await rendered(myPane, child);
+      // A later toggle (or disposal) superseded this mount while it rendered.
+      if (mine !== seq) next.dispose();
+      else view = next;
     }
 
     toggleButton(ctx.tools, "Source", source, async (on) => {
@@ -33,6 +40,7 @@ export function withSource(rendered: Renderer): Renderer {
       update: () => view?.update() ?? Promise.resolve(),
       retheme: () => view?.retheme?.(),
       dispose: () => {
+        seq++;
         view?.dispose();
         pane?.remove();
       },

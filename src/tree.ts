@@ -51,10 +51,9 @@ export class Tree {
     if (!path.startsWith(`${this.root}/`)) return false;
     const chain: string[] = [];
     for (let dir = dirname(path); dir !== this.root && dir.startsWith(this.root); dir = dirname(dir)) chain.unshift(dir);
-    for (const dir of chain) {
-      if (!this.children.has(dir)) await this.load(dir);
-      this.expanded.add(dir);
-    }
+    // Hidden directories are unwatched, so their cached listings may be stale.
+    await Promise.all(chain.map((dir) => this.load(dir)));
+    for (const dir of chain) this.expanded.add(dir);
     this.selected = path;
     this.render();
     this.moveTo(this.rows.findIndex((r) => r.entry.path === path), false);
@@ -167,6 +166,7 @@ export class Tree {
   }
 
   private moveTo(i: number, preview = true) {
+    clearTimeout(this.previewTimer);
     if (!this.rows.length || i < 0) return;
     i = Math.max(0, Math.min(this.rows.length - 1, i));
     this.rowEls[this.cursor]?.classList.remove("cursor");
@@ -176,12 +176,12 @@ export class Tree {
     rowEl.scrollIntoView({ block: "nearest" });
     const entry = this.rows[i].entry;
     if (preview && !entry.isDir) {
-      clearTimeout(this.previewTimer);
       this.previewTimer = window.setTimeout(() => this.choose(entry), 70);
     }
   }
 
   private choose(entry: Entry) {
+    clearTimeout(this.previewTimer);
     if (entry.isDir) return;
     this.setSelected(entry.path);
     this.handlers.open(entry);
@@ -189,7 +189,11 @@ export class Tree {
 
   private async toggle(entry: Entry, open = !this.expanded.has(entry.path)) {
     if (open) {
-      if (!this.children.has(entry.path)) await this.load(entry.path);
+      // Collapsed directories are not watched, so re-list rather than trust the
+      // cache — including expanded subdirectories that become visible again.
+      const prefix = `${entry.path}/`;
+      const stale = [...this.children.keys()].filter((d) => d.startsWith(prefix) && this.expanded.has(d));
+      await Promise.all([entry.path, ...stale].map((d) => this.load(d)));
       this.expanded.add(entry.path);
     } else {
       this.expanded.delete(entry.path);

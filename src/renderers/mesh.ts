@@ -188,7 +188,12 @@ function disposeObject(root: THREE.Object3D) {
     node.geometry?.dispose();
     const mats = Array.isArray(node.material) ? node.material : node.material ? [node.material] : [];
     for (const m of mats) {
-      for (const v of Object.values(m)) if (v instanceof THREE.Texture) v.dispose();
+      for (const v of Object.values(m)) {
+        if (!(v instanceof THREE.Texture)) continue;
+        // GLTFLoader decodes to ImageBitmaps, which Texture.dispose() leaves open.
+        if (typeof ImageBitmap !== "undefined" && v.image instanceof ImageBitmap) v.image.close();
+        v.dispose();
+      }
       m.dispose();
     }
   });
@@ -250,6 +255,7 @@ const mesh: Renderer = async (host, ctx) => {
   scene.add(pivot);
   let grid: THREE.GridHelper | null = null;
   let model: THREE.Object3D | null = null;
+  let disposed = false;
 
   const controls = new OrbitControls(camera, renderer.domElement);
   const render = () => renderer.render(scene, camera);
@@ -314,8 +320,13 @@ const mesh: Renderer = async (host, ctx) => {
     try {
       next = await loadModel(ctx, manager);
     } catch (e) {
+      if (disposed) return;
       frame.querySelector(".message")?.remove();
       frame.append(messageBox("error", `Could not load this .${ctx.type.ext} file`, e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    if (disposed) {
+      disposeObject(next);
       return;
     }
     frame.querySelector(".message")?.remove();
@@ -383,6 +394,7 @@ const mesh: Renderer = async (host, ctx) => {
       render();
     },
     dispose: () => {
+      disposed = true;
       resize.disconnect();
       controls.dispose();
       if (model) disposeObject(model);

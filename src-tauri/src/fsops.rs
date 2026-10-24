@@ -27,27 +27,48 @@ pub struct TextFile {
     pub binary: bool,
 }
 
-/// Resolve a path from the UI against the root without touching the filesystem,
-/// rejecting anything that lexically escapes the root.
+/// Resolve a path from the UI against the (canonical) root. It must stay under
+/// the root both lexically and after following symlinks, so a link such as
+/// `outside -> /etc` cannot be used to read past the root. Paths that no longer
+/// exist (a deleted file being stat'ed) are checked through their nearest
+/// existing ancestor. Returns the lexical path.
 pub fn confine(root: &Path, requested: &str) -> Result<PathBuf, String> {
     let requested = Path::new(requested);
     let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
-    let mut out = PathBuf::new();
+    let mut lexical = PathBuf::new();
     for component in joined.components() {
         match component {
             Component::ParentDir => {
-                if !out.pop() {
+                if !lexical.pop() {
                     return Err("path escapes the filesystem root".into());
                 }
             }
             Component::CurDir => {}
-            other => out.push(other),
+            other => lexical.push(other),
         }
     }
-    if out.starts_with(root) {
-        Ok(out)
+    if !lexical.starts_with(root) {
+        return Err(format!("{} is outside {}", lexical.display(), root.display()));
+    }
+
+    let mut probe = lexical.as_path();
+    let mut missing = Vec::new();
+    let real = loop {
+        match probe.canonicalize() {
+            Ok(found) => break missing.iter().rev().fold(found, |acc: PathBuf, part| acc.join(part)),
+            Err(_) => match (probe.parent(), probe.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name.to_os_string());
+                    probe = parent;
+                }
+                _ => break lexical.clone(),
+            },
+        }
+    };
+    if real.starts_with(root) {
+        Ok(lexical)
     } else {
-        Err(format!("{} is outside {}", out.display(), root.display()))
+        Err(format!("{} links outside {}", lexical.display(), root.display()))
     }
 }
 
@@ -183,13 +204,34 @@ mod tests {
 
     #[test]
     fn confine_rejects_escapes() {
-        let root = Path::new("/home/u/proj");
-        assert_eq!(confine(root, "/home/u/proj/a/b.md").unwrap(), root.join("a/b.md"));
-        assert_eq!(confine(root, "/home/u/proj/a/../c").unwrap(), root.join("c"));
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().canonicalize().unwrap();
+        let r = root.to_string_lossy();
+        assert_eq!(confine(root, &format!("{r}/a/b.md")).unwrap(), root.join("a/b.md"));
+        assert_eq!(confine(root, &format!("{r}/a/../c")).unwrap(), root.join("c"));
         assert_eq!(confine(root, "sub/x.txt").unwrap(), root.join("sub/x.txt"));
-        assert!(confine(root, "/home/u/proj/../secret").is_err());
+        assert!(confine(root, &format!("{r}/../secret")).is_err());
         assert!(confine(root, "/etc/passwd").is_err());
-        assert!(confine(root, "/home/u/project2/x").is_err());
+        assert!(confine(root, &format!("{r}2/x")).is_err());
+    }
+
+    #[test]
+    fn confine_follows_symlinks() {
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), "x").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().canonicalize().unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::write(root.join("docs/a.md"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("out")).unwrap();
+        std::os::unix::fs::symlink(root.join("docs"), root.join("alias")).unwrap();
+
+        assert!(confine(root, &format!("{}/out/secret", root.display())).is_err());
+        assert!(confine(root, &format!("{}/out", root.display())).is_err());
+        // Links that stay inside the root are fine, as are paths that no longer exist.
+        assert_eq!(confine(root, &format!("{}/alias/a.md", root.display())).unwrap(), root.join("alias/a.md"));
+        assert!(confine(root, &format!("{}/docs/deleted.md", root.display())).is_ok());
+        assert!(confine(root, &format!("{}/out/deleted", root.display())).is_err());
     }
 
     #[test]

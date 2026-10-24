@@ -16,7 +16,12 @@ export async function mountPdf(host: HTMLElement, tools: HTMLElement, source: ()
   host.append(container);
   const eventBus = new EventBus();
   const linkService = new PDFLinkService({ eventBus });
-  const viewer = new PDFViewer({ container, eventBus, linkService, removePageBorders: false });
+  // Disconnects pdf.js's own ResizeObserver and scroll listeners on dispose.
+  // The constructor reads `abortSignal`, but pdf.js's typings omit it.
+  const abort = new AbortController();
+  const options = { container, eventBus, linkService, removePageBorders: false, abortSignal: abort.signal };
+  const viewer = new PDFViewer(options as ConstructorParameters<typeof PDFViewer>[0]);
+  let disposed = false;
   linkService.setViewer(viewer);
 
   let scale = prefs.get<string>("pdf:scale", "page-width");
@@ -49,6 +54,7 @@ export async function mountPdf(host: HTMLElement, tools: HTMLElement, source: ()
 
   async function load() {
     const url = await source();
+    if (disposed) return;
     const nextTask = pdfjs.getDocument({
       url,
       cMapUrl: `${vendor}cmaps/`,
@@ -62,8 +68,13 @@ export async function mountPdf(host: HTMLElement, tools: HTMLElement, source: ()
       next = await nextTask.promise;
     } catch (e) {
       void nextTask.destroy();
+      if (disposed) return;
       container.querySelector(".message")?.remove();
       container.prepend(messageBox("error", "This PDF could not be opened.", e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    if (disposed) {
+      void nextTask.destroy();
       return;
     }
     container.querySelector(".message")?.remove();
@@ -89,6 +100,8 @@ export async function mountPdf(host: HTMLElement, tools: HTMLElement, source: ()
   return {
     update: load,
     dispose: () => {
+      disposed = true;
+      abort.abort();
       onResize.disconnect();
       viewer.setDocument(null as never);
       void task?.destroy();
