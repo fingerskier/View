@@ -80,18 +80,24 @@ impl Watcher {
         }
     }
 
-    /// Re-register watched directories among `touched` paths. A directory that
-    /// is gone is forgotten, so the UI's next `set_dirs` adds it back if it returns.
+    /// Re-register watched directories at or below `touched` paths: replacing
+    /// a directory also orphans the watches on everything inside it. A
+    /// directory that is gone is forgotten, so the UI's next `set_dirs` adds
+    /// it back if it returns.
     pub fn rearm<'a>(&mut self, touched: impl IntoIterator<Item = &'a PathBuf>) {
-        for path in touched {
-            let (ui, extra) = (self.dirs.contains(path), self.extra.contains(path));
-            if !ui && !extra {
-                continue;
-            }
-            let _ = self.debouncer.unwatch(path);
-            if self.debouncer.watch(path, RecursiveMode::NonRecursive).is_err() {
-                self.dirs.remove(path);
-                self.extra.remove(path);
+        let touched: Vec<&PathBuf> = touched.into_iter().collect();
+        let stale: BTreeSet<PathBuf> = self
+            .dirs
+            .iter()
+            .chain(&self.extra)
+            .filter(|dir| touched.iter().any(|t| dir.starts_with(t)))
+            .cloned()
+            .collect();
+        for dir in stale {
+            let _ = self.debouncer.unwatch(&dir);
+            if self.debouncer.watch(&dir, RecursiveMode::NonRecursive).is_err() {
+                self.dirs.remove(&dir);
+                self.extra.remove(&dir);
             }
         }
     }
@@ -165,5 +171,34 @@ mod tests {
         // Read-only handle: its close must not be what gets reported.
         std::fs::File::open(&file).unwrap().set_modified(SystemTime::now()).unwrap();
         assert!(settle().contains(&file), "touch missed");
+    }
+
+    /// Swapping out a directory above a watched one must not leave that
+    /// watch on the old inode (lib.rs calls `rearm` with every batch).
+    #[test]
+    fn replacing_an_ancestor_rearms_watched_descendants() {
+        let root = tempfile::tempdir().unwrap();
+        let (a, sub) = (root.path().join("a"), root.path().join("a/sub"));
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let (tx, rx) = mpsc::channel::<BTreeSet<PathBuf>>();
+        let mut w = Watcher::new(move |paths| drop(tx.send(paths))).unwrap();
+        w.set_dirs(HashSet::from([root.path().to_path_buf(), a.clone(), sub.clone()]));
+
+        std::fs::rename(&a, root.path().join("a.old")).unwrap();
+        std::fs::create_dir_all(root.path().join("a.new/sub")).unwrap();
+        std::fs::rename(root.path().join("a.new"), &a).unwrap();
+        let wait = || rx.recv_timeout(Duration::from_secs(2)).expect("no event");
+        w.rearm(&wait());
+        // Drain the rest of the swap; re-arming must not generate events of its own.
+        for _ in 0..5 {
+            let Ok(more) = rx.recv_timeout(Duration::from_millis(300)) else { break };
+            w.rearm(&more);
+        }
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "rearm keeps reporting");
+
+        let file = sub.join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(wait().contains(&file), "edit inside the replaced tree missed");
     }
 }
