@@ -49,6 +49,8 @@ interface Current {
   view: View | null;
   /** Changed on disk while the first render was still running. */
   dirty: boolean;
+  /** The first render threw, so there is no view to update in place. */
+  failed: boolean;
 }
 
 export interface ViewerEls {
@@ -117,7 +119,7 @@ export class Viewer {
     this.setCrumbs(path);
     this.els.kind.textContent = kindLabel[type.kind];
 
-    const current: Current = { path, type, version: Date.now(), view: null, dirty: false };
+    const current: Current = { path, type, version: Date.now(), view: null, dirty: false, failed: false };
     this.current = current;
     const ctx: Ctx = {
       path,
@@ -150,12 +152,18 @@ export class Viewer {
         void this.reload();
       }
     } catch (e) {
-      if (token === this.token) host.replaceChildren(messageBox("error", "Could not render this file", e instanceof Error ? e.message : String(e)));
+      if (token === this.token) {
+        current.failed = true;
+        host.replaceChildren(messageBox("error", "Could not render this file", e instanceof Error ? e.message : String(e)));
+      }
     } finally {
       clearTimeout(loading);
       if (token === this.token) this.els.view.classList.remove("loading");
     }
-    if (token === this.token) void this.refreshStatus();
+    if (token !== this.token) return;
+    // It failed (say, half-written) but has changed since: try the new version.
+    if (current.failed && current.dirty) void this.open(path);
+    else void this.refreshStatus();
   }
 
   /** Paths changed on disk; reload if they concern the open file. */
@@ -172,8 +180,10 @@ export class Viewer {
     const cur = this.current;
     if (!cur) return;
     if (!cur.view) {
-      // Still mounting: re-render once the first render lands.
-      cur.dirty = true;
+      // A failed mount has nothing to update, so mount afresh. Otherwise it is
+      // still mounting: re-render once the first render lands.
+      if (cur.failed) void this.open(cur.path);
+      else cur.dirty = true;
       return;
     }
     if (this.updating) {

@@ -5,22 +5,30 @@ import type { Renderer } from "./types";
 const MAX_ROWS = 5000;
 const MAX_COLS = 200;
 
+/** Merged regions, clipped to the displayed range so a huge merge costs no
+ * more than the table itself: the top-left cell spans, the rest are skipped. */
+export function mergeLayout(merges: XLSX.Range[], lastRow: number, lastCol: number) {
+  const spans = new Map<string, { rows: number; cols: number }>();
+  const covered = new Set<string>();
+  for (const m of merges) {
+    if (m.s.r > lastRow || m.s.c > lastCol) continue;
+    const endRow = Math.min(m.e.r, lastRow);
+    const endCol = Math.min(m.e.c, lastCol);
+    spans.set(`${m.s.r}:${m.s.c}`, { rows: endRow - m.s.r + 1, cols: endCol - m.s.c + 1 });
+    for (let r = m.s.r; r <= endRow; r++) {
+      for (let c = m.s.c; c <= endCol; c++) if (r !== m.s.r || c !== m.s.c) covered.add(`${r}:${c}`);
+    }
+  }
+  return { spans, covered };
+}
+
 function renderSheet(ws: XLSX.WorkSheet): HTMLElement {
   const ref = ws["!ref"];
   if (!ref) return messageBox("info", "This sheet is empty.");
   const range = XLSX.utils.decode_range(ref);
   const lastRow = Math.min(range.e.r, range.s.r + MAX_ROWS - 1);
   const lastCol = Math.min(range.e.c, range.s.c + MAX_COLS - 1);
-
-  // Merged regions: the top-left cell spans, the rest are skipped.
-  const spans = new Map<string, { rows: number; cols: number }>();
-  const covered = new Set<string>();
-  for (const m of ws["!merges"] ?? []) {
-    spans.set(`${m.s.r}:${m.s.c}`, { rows: m.e.r - m.s.r + 1, cols: m.e.c - m.s.c + 1 });
-    for (let r = m.s.r; r <= m.e.r; r++) {
-      for (let c = m.s.c; c <= m.e.c; c++) if (r !== m.s.r || c !== m.s.c) covered.add(`${r}:${c}`);
-    }
-  }
+  const { spans, covered } = mergeLayout(ws["!merges"] ?? [], lastRow, lastCol);
 
   const table = el("table", { class: "grid sheet" });
   const head = el("tr", {}, el("th", { class: "rownum" }));
