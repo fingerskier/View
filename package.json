@@ -1,0 +1,39 @@
+{
+  "name": "view",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Omarchy file viewer: file tree + live-reloading renderers",
+  "type": "module",
+  "scripts": {
+    "vendor": "node scripts/copy-vendor.mjs",
+    "dev": "npm run vendor && vite",
+    "build": "npm run vendor && tsc --noEmit && vite build",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build --no-bundle",
+    "install-local": "tauri build --no-bundle && install -Dm755 src-tauri/target/release/view \"$HOME/.local/bin/view\""
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "docx-preview": "^0.4.1",
+    "dompurify": "^3.4.17",
+    "markdown-it": "^15.0.3",
+    "mermaid": "^12.2.0",
+    "papaparse": "^5.7.0",
+    "pdfjs-dist": "^6.4.299",
+    "shiki": "^4.5.0",
+    "three": "^0.186.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/markdown-it": "^14.2.0",
+    "@types/papaparse": "^5.5.2",
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

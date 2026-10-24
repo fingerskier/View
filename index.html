@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>view</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header id="side-head">
+          <span id="root-label" title=""></span>
+          <button id="toggle-hidden" class="tool" title="Show hidden and ignored files (.)">.*</button>
+          <button id="collapse-all" class="tool" title="Collapse all">⊟</button>
+        </header>
+        <div id="tree" tabindex="0" role="tree" aria-label="Files"></div>
+      </aside>
+      <div id="resizer" role="separator" aria-orientation="vertical"></div>
+      <main id="main">
+        <header id="bar">
+          <nav id="crumbs"></nav>
+          <div id="tools"></div>
+        </header>
+        <section id="view" tabindex="-1"></section>
+        <footer id="status">
+          <span id="status-kind"></span>
+          <span id="status-size"></span>
+          <span id="status-time"></span>
+          <span id="status-live" title="Watching for changes"></span>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
