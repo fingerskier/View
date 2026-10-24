@@ -1,9 +1,23 @@
-use notify::{RecommendedWatcher, RecursiveMode};
+use notify::event::{AccessKind, AccessMode, ModifyKind};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// Whether an event can change what a file or directory listing shows.
+/// inotify also reports opens, read-only closes and attribute changes; the
+/// viewer reading a file causes those (relatime updates atime on the first
+/// read after a write), so counting them would make every render trigger
+/// another one.
+fn is_change(kind: &EventKind) -> bool {
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_)) => false,
+        _ => true,
+    }
+}
 
 /// Non-recursive watches on exactly the directories the UI is showing, so a
 /// huge tree (node_modules, target/) never costs more than what is expanded.
@@ -27,8 +41,11 @@ impl Watcher {
             .spawn(move || {
                 for result in rx {
                     let Ok(events) = result else { continue };
-                    let paths: BTreeSet<PathBuf> =
-                        events.into_iter().flat_map(|e| e.event.paths).collect();
+                    let paths: BTreeSet<PathBuf> = events
+                        .into_iter()
+                        .filter(|e| is_change(&e.event.kind))
+                        .flat_map(|e| e.event.paths)
+                        .collect();
                     if !paths.is_empty() {
                         on_change(paths);
                     }
@@ -85,5 +102,51 @@ impl Watcher {
             return true;
         }
         self.debouncer.watch(dir, RecursiveMode::NonRecursive).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{CreateKind, DataChange, MetadataKind, RemoveKind, RenameMode};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn reads_are_not_changes() {
+        assert!(!is_change(&EventKind::Access(AccessKind::Open(AccessMode::Any))));
+        assert!(!is_change(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
+        assert!(!is_change(&EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))));
+        assert!(is_change(&EventKind::Access(AccessKind::Close(AccessMode::Write))));
+        assert!(is_change(&EventKind::Modify(ModifyKind::Data(DataChange::Any))));
+        assert!(is_change(&EventKind::Modify(ModifyKind::Name(RenameMode::To))));
+        assert!(is_change(&EventKind::Create(CreateKind::File)));
+        assert!(is_change(&EventKind::Remove(RemoveKind::File)));
+    }
+
+    /// Reading a watched file or listing a watched directory must not report
+    /// anything, or the viewer re-renders forever; writing must.
+    #[test]
+    fn reading_is_silent_writing_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "one").unwrap();
+        // Let the write's events land before the watch starts.
+        std::thread::sleep(Duration::from_millis(50));
+
+        let seen = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let sink = seen.clone();
+        let mut w = Watcher::new(move |paths| sink.lock().unwrap().extend(paths)).unwrap();
+        w.set_dirs(HashSet::from([dir.path().to_path_buf()]));
+
+        for _ in 0..5 {
+            std::fs::read(&file).unwrap();
+            std::fs::read_dir(dir.path()).unwrap().for_each(drop);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(seen.lock().unwrap().is_empty(), "reads reported: {:?}", seen.lock().unwrap());
+
+        std::fs::write(&file, "two").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(seen.lock().unwrap().contains(&file));
     }
 }
